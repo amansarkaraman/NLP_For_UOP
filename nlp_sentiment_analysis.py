@@ -7,7 +7,7 @@ nltk.download("vader_lexicon")
 
 # Read your Excel file
 # Change the file name if your file has a different name
-df = pd.read_excel("amazon_reviews_test.xlsx")
+df = pd.read_excel("amazon_reviews.xlsx")
 
 # Check the first few rows
 print("First 5 rows of data:")

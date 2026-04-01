@@ -1,10 +1,19 @@
 import time
-import requests
+import random
 import pandas as pd
 from bs4 import BeautifulSoup
+import cloudscraper
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+    "Referer": "https://www.google.com/",
+    "Connection": "keep-alive",
 }
 
 BASE_URL = "https://www.trustpilot.com/review/www.amazon.com"
@@ -17,16 +26,14 @@ def clean_text(text):
 def extract_reviews_from_page(html):
     soup = BeautifulSoup(html, "html.parser")
     reviews = []
+    seen = set()
 
-    # Try several common selectors because site HTML can change
     selectors = [
         '[data-service-review-text-typography="true"]',
         '[data-review-content="true"]',
         'p.typography_body-l__KUYFJ',
         'article p',
     ]
-
-    seen = set()
 
     for selector in selectors:
         for tag in soup.select(selector):
@@ -38,44 +45,77 @@ def extract_reviews_from_page(html):
     return reviews
 
 
-def scrape_trustpilot_reviews(pages=3):
+def scrape_trustpilot_reviews(max_pages=50, stop_after_empty=3):
+    scraper = cloudscraper.create_scraper(
+        browser={
+            "browser": "chrome",
+            "platform": "darwin",
+            "mobile": False
+        }
+    )
+    scraper.headers.update(HEADERS)
+
     all_rows = []
+    seen_reviews = set()
+    empty_count = 0
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
-
-    for page in range(1, pages + 1):
+    for page in range(1, max_pages + 1):
         url = f"{BASE_URL}?page={page}"
-        print(f"Downloading page {page}: {url}")
+        print(f"\nDownloading page {page}: {url}")
 
-        response = session.get(url, timeout=20)
-        response.raise_for_status()
+        try:
+            response = scraper.get(url, timeout=20)
+        except Exception as e:
+            print(f"Request failed: {e}")
+            break
+
+        print("Status:", response.status_code)
+
+        if response.status_code == 403:
+            print("Blocked by Trustpilot (403 Forbidden).")
+            print(response.text[:300])
+            break
+
+        if response.status_code != 200:
+            print(f"Unexpected status code: {response.status_code}")
+            break
 
         page_reviews = extract_reviews_from_page(response.text)
-        print(f"  Found {len(page_reviews)} possible reviews on this page")
+        print(f"Found {len(page_reviews)} possible reviews")
 
+        added = 0
         for review in page_reviews:
-            all_rows.append({
-                "website": "Amazon",
-                "source": "Trustpilot",
-                "page": page,
-                "review_text": review
-            })
+            if review not in seen_reviews:
+                seen_reviews.add(review)
+                all_rows.append({
+                    "website": "Amazon",
+                    "source": "Trustpilot",
+                    "page": page,
+                    "review_text": review
+                })
+                added += 1
 
-        time.sleep(2)
+        print(f"Added {added} new reviews")
+
+        if added == 0:
+            empty_count += 1
+        else:
+            empty_count = 0
+
+        if empty_count >= stop_after_empty:
+            print("Stopping: several pages returned no new reviews.")
+            break
+
+        time.sleep(random.uniform(3, 6))
 
     df = pd.DataFrame(all_rows)
-    df = df.drop_duplicates(subset=["review_text"]).reset_index(drop=True)
-    df.insert(0, "review_id", range(1, len(df) + 1))
+    if not df.empty:
+        df.insert(0, "review_id", range(1, len(df) + 1))
     return df
 
 
 if __name__ == "__main__":
-    df = scrape_trustpilot_reviews(pages=3)
-
-    output_file = "amazon_reviews_test.xlsx"
-    df.to_excel(output_file, index=False)
-
-    print("\nDone.")
-    print(f"Saved {len(df)} reviews to {output_file}")
-    print(df.head(10))
+    df = scrape_trustpilot_reviews(max_pages=50)
+    df.to_excel("amazon_reviews.xlsx", index=False)
+    print(f"\nSaved {len(df)} reviews.")
+    print(df.head())
